@@ -1,14 +1,14 @@
 # Task 4: Deployment topologies and trade-offs
 
-**Name / ชื่อ:**
+**Name / ชื่อ:** Pasin Thanyakasikol พศิน ธัญญกสิกล
 
-**Student ID / รหัสนิสิต:**
+**Student ID / รหัสนิสิต:** 6732025921
 
 This is **individual work**: each student completes and submits their own copy, in their own fork.
 
 *งานนี้เป็น**งานเดี่ยว** นิสิตแต่ละคนทำและส่งงานของตัวเอง ใน fork ของตัวเอง*
 
-**Scenario (A, B or C) / Scenario ที่เลือก:**
+**Scenario (A, B or C) / Scenario ที่เลือก:** B (last digit 1 is odd)
 
 Choose **one** scenario below. If the last digit of your student ID is odd, take A or B; if it is even, take B or C. Use your measurements from Tutorial 6 as evidence: cite run names from `results/runs.csv`. Answer in Thai or English.
 
@@ -58,9 +58,9 @@ The three most important quality requirements for your scenario, each with a num
 
 | # | Quality | Requirement |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 | Availability | the kiosk accepts 100% of reviews even when offline for minutes. no review is lost |
+| 2 | Accuracy | at least 90% of labels correct (QR3) |
+| 3 | Timeliness / cost | every review labelled by end of day. send as few as possible to the large model |
 
 ## 2. Design / การออกแบบ
 
@@ -68,16 +68,27 @@ Your topology, the patterns you add, and a container-level diagram (C4 level 2).
 
 *topology ที่เลือก pattern ที่เพิ่ม และ diagram ระดับ container (C4 level 2) เขียนด้วย Mermaid*
 
+T4 asynchronous / batch. the kiosk saves the review on the tablet first then syncs when the wifi comes back. the review service stores it as pending - same as the fallback in Task 1. a batch job scores the pending ones every few minutes with cascade (threshold 0.7) and cache. owners only need labels by end of day so nobody waits for the model
+
 ```mermaid
 C4Container
-    title Your design: container diagram
-    %% Replace the example below with your own people, containers and relationships.
-    %% See the CampusEats C4 diagram in README.md for the full syntax.
-    Person(customer, "Customer", "Writes restaurant reviews")
+    title Canteen kiosk (scenario B): container diagram
+    Person(student, "Student", "Writes a review on the canteen tablet")
+    Person(owner, "Restaurant owner", "Reads labels at the end of the day")
     System_Boundary(campuseats, "CampusEats") {
-        Container(review, "Review service", "Python, FastAPI", "What it does")
+        Container(kiosk, "Kiosk app", "Tablet app, local storage", "Saves every review on the tablet first and syncs when Wi-Fi is back")
+        Container(gateway, "API gateway", "Python, FastAPI", "Single entry point")
+        Container(review, "Review service", "Python, FastAPI", "Stores reviews as pending")
+        Container(batch, "Batch scorer", "Python, scheduled job", "Scores pending reviews with cascade + cache")
+        Container(inference, "Inference service", "Python, FastAPI, scikit-learn", "Small model and large model")
     }
-    Rel(customer, review, "Posts reviews", "HTTP/JSON")
+    Rel(student, kiosk, "Writes review")
+    Rel(kiosk, gateway, "Syncs saved reviews", "HTTP/JSON, retry")
+    Rel(gateway, review, "Forwards requests", "HTTP/JSON")
+    Rel(batch, review, "Reads pending, writes labels", "HTTP/JSON")
+    Rel(batch, inference, "POST /predict", "REST")
+    Rel(owner, gateway, "Reads review counts by label", "HTTP/JSON")
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ```
 
 ## 3. Evidence / หลักฐาน
@@ -88,8 +99,10 @@ Which runs support your choice? Show the numbers and, for scenario A, the capaci
 
 | Run | What it shows / แสดงอะไร |
 |---|---|
-| | |
-| | |
+| t1-after | with fallback 0 errors and 23 pending instead of 20 errors in t1-before. saving pending and scoring later loses nothing |
+| t2-0.7 | cascade keeps 93.0% accuracy with only 53% large calls vs 100% in t0-large |
+| t3-cache | cache on top brings large calls down to 38% at the same 93.0% |
+| t0-small | small model alone is only 72.5% so running only the small model on the tablet fails QR3 |
 
 ## 4. ADR
 
@@ -97,20 +110,20 @@ Use the ADR format from W5.
 
 *ใช้รูปแบบ ADR จาก W5*
 
-**Title:**
+**Title:** Store reviews on the kiosk and score them in batch with cascade + cache
 
 **Status:** Proposed
 
-**Context:**
+**Context:** canteen wifi drops several times a day for minutes. every review must be accepted even offline. owners only need labels by end of day. large model is accurate but slow and costs money per call (20 calls/s max)
 
-**Decision:**
+**Decision:** T4 batch. the kiosk keeps reviews in local storage and syncs with retry when online. the review service saves them as pending. a scheduled batch job labels pending reviews using cascade (0.7) plus cache
 
 **Consequences:**
-- Positive:
-- Negative:
+- Positive: no review is lost when offline. no user waits for the model. the batch can run slowly so the 20 calls/s limit is never a problem. cascade + cache cut large calls to about 38% (t3-cache) with 93% accuracy
+- Negative: labels are late - minutes to hours. the kiosk needs local storage and sync logic and we must handle duplicates when it retries. one more thing to run and monitor (the batch job)
 
 **Alternatives considered:** at least one topology you rejected, and why.
 
 *อย่างน้อยหนึ่ง topology ที่ไม่เลือก และเหตุผล*
 
->
+> T1 synchronous - the tablet can't reach the service when offline so reviews fail. that breaks the main requirement. T2 small model on the tablet - works offline but only 72.5% (t0-small). T3 hybrid would still need the network for hard reviews and real-time labels aren't needed here anyway so batch is simpler
